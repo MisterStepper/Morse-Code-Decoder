@@ -1,0 +1,122 @@
+import machine
+import ssd1306
+import time
+import sys
+import framebuf
+
+# --- Hardware Setup ---
+i2c = machine.I2C(0, sda=machine.Pin(4), scl=machine.Pin(5), freq=400000)
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+button = machine.Pin(15, machine.Pin.IN, machine.Pin.PULL_UP)
+
+# --- Morse Code Table ---
+MORSE = {
+    '.-': 'A',    '-...': 'B',  '-.-.': 'C',  '-..': 'D',
+    '.': 'E',     '..-.': 'F',  '--.': 'G',   '....': 'H',
+    '..': 'I',    '.---': 'J',  '-.-': 'K',   '.-..': 'L',
+    '--': 'M',    '-.': 'N',    '---': 'O',   '.--.': 'P',
+    '--.-': 'Q',  '.-.': 'R',   '...': 'S',   '-': 'T',
+    '..-': 'U',   '...-': 'V',  '.--': 'W',   '-..-': 'X',
+    '-.--': 'Y',  '--..': 'Z',
+    '-----': '0', '.----': '1', '..---': '2', '...--': '3',
+    '....-': '4', '.....': '5', '-....': '6', '--...': '7',
+    '---..': '8', '----.': '9',
+    '.-.-.-': '.', '--..--': ',', '..--..': '?',
+}
+
+# --- Timing (ms) ---
+DOT_MAX = 170
+LETTER_GAP = 500
+WORD_GAP = 1500
+LONG_PRESS = 2000
+
+# --- State ---
+current_sequence = ''
+decoded_text = ''
+last_release = 0
+letter_decoded = False
+
+def decode(seq):
+    return MORSE.get(seq, '*')
+
+def draw_large_char(char, x, y):
+    buf = bytearray(8)
+    fb = framebuf.FrameBuffer(buf, 8, 8, framebuf.MONO_HLSB)
+    fb.text(char, 0, 0)
+    for row in range(8):
+        for col in range(8):
+            if fb.pixel(col, row):
+                oled.fill_rect(x + col*3, y + row*3, 3, 3, 1)
+
+def wrap(text, width):
+    return [text[i:i+width] for i in range(0, max(1, len(text)), width)]
+
+def draw(sequence, text, last_char, status=''):
+    oled.fill(0)
+    oled.text(sequence if sequence else '', 0, 0)
+    oled.hline(0, 12, 128, 1)
+
+    if last_char:
+        draw_large_char(last_char, 52, 16)
+
+    oled.hline(0, 42, 128, 1)
+
+    if status:
+        oled.text(status, 0, 45)
+    else:
+        for i, line in enumerate(wrap(text, 16)):
+            oled.text(line, 0, 45 + i * 10)
+            if i > 1:
+                break
+
+    oled.show()
+
+# --- Main Loop ---
+draw('', '', '')
+
+while True:
+    now = time.ticks_ms()
+
+    if not button.value():
+        press_start = now
+        while not button.value():
+            time.sleep_ms(10)
+        duration = time.ticks_diff(time.ticks_ms(), press_start)
+
+        if duration >= LONG_PRESS:
+            current_sequence = ''
+            decoded_text = ''
+            draw('', '', '', 'CLEARED')
+            time.sleep_ms(500)
+            draw('', '', '')
+        elif duration < DOT_MAX:
+            current_sequence += '.'
+        else:
+            current_sequence += '-'
+
+        last_release = time.ticks_ms()
+        letter_decoded = False
+        if duration < LONG_PRESS:
+            draw(current_sequence, decoded_text, '')
+
+    elif current_sequence and not letter_decoded:
+        elapsed = time.ticks_diff(now, last_release)
+
+        if elapsed >= WORD_GAP:
+            char = decode(current_sequence)
+            decoded_text += char + ' '
+            draw('', decoded_text, char)
+            current_sequence = ''
+            letter_decoded = True
+
+        elif elapsed >= LETTER_GAP:
+            char = decode(current_sequence)
+            decoded_text += char
+            draw('', decoded_text, char)
+            current_sequence = ''
+            letter_decoded = True
+
+    if len(decoded_text) > 48:
+        decoded_text = decoded_text[-32:]
+
+    time.sleep_ms(20)
